@@ -23,7 +23,7 @@ Biblioteca de interface gráfica para scripts Roblox.
 ## 1. Inicialização
 
 ```lua
-local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/Lucasggk/Library/refs/heads/main/Library.lua"))()
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/ServerSad/LibraryFluent/refs/heads/main/Library.lua"))()
 ```
 
 ---
