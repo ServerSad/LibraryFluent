@@ -12,6 +12,11 @@ local Mobile = not RunService:IsStudio() and table.find({Enum.Platform.IOS, Enum
 
 local RenderStepped = RunService.RenderStepped
 
+-- Height of the top bar, in pixels, and the window corner radius. Every window
+-- offset is derived from these, so changing them re-lays the whole window out.
+local TITLEBAR_HEIGHT = Mobile and 54 or 48
+local WINDOW_CORNER = 10
+
 local ProtectGui = protectgui or (syn and syn.protect_gui) or function() end
 local ParentUi = LocalPlayer:FindFirstChild("PlayerGui")
 
@@ -98,6 +103,18 @@ local Themes = {
 		DialogBorder = Color3.fromRGB(50, 50, 50),
 		DialogInput = Color3.fromRGB(45, 45, 45),
 		DialogInputLine = Color3.fromRGB(120, 120, 120),
+		ToggleSlider = Color3.fromRGB(100, 100, 100),
+		ToggleToggled = Color3.fromRGB(22, 22, 22),
+		SliderRail = Color3.fromRGB(100, 100, 100),
+		DropdownOption = Color3.fromRGB(100, 100, 100),
+		Keybind = Color3.fromRGB(100, 100, 100),
+		Input = Color3.fromRGB(140, 140, 140),
+		InputFocused = Color3.fromRGB(10, 10, 10),
+		InputIndicator = Color3.fromRGB(130, 130, 130),
+		Text = Color3.fromRGB(240, 240, 240),
+		SubText = Color3.fromRGB(165, 165, 165),
+		Hover = Color3.fromRGB(100, 100, 100),
+		HoverChange = 0.06,
 	},
 	AMOLED = {
 		Name = "AMOLED",
@@ -758,6 +775,7 @@ local Library = {
 
 	Creator = nil,
 
+	Theme = "Dark",
 	DialogOpen = false,
 	UseAcrylic = false,
 	Acrylic = false,
@@ -2040,7 +2058,7 @@ function AcrylicPaint()
 			}),
 
 			New("UICorner", {
-				CornerRadius = UDim.new(0, 8),
+				CornerRadius = UDim.new(0, WINDOW_CORNER),
 			}),
 
 			New("Frame", {
@@ -2052,7 +2070,7 @@ function AcrylicPaint()
 				},
 			}, {
 				New("UICorner", {
-					CornerRadius = UDim.new(0, 8),
+					CornerRadius = UDim.new(0, WINDOW_CORNER),
 				}),
 			}),
 
@@ -2062,7 +2080,7 @@ function AcrylicPaint()
 				Size = UDim2.fromScale(1, 1),
 			}, {
 				New("UICorner", {
-					CornerRadius = UDim.new(0, 8),
+					CornerRadius = UDim.new(0, WINDOW_CORNER),
 				}),
 
 				New("UIGradient", {
@@ -2082,7 +2100,7 @@ function AcrylicPaint()
 				BackgroundTransparency = 1,
 			}, {
 				New("UICorner", {
-					CornerRadius = UDim.new(0, 8),
+					CornerRadius = UDim.new(0, WINDOW_CORNER),
 				}),
 			}),
 
@@ -2098,7 +2116,7 @@ function AcrylicPaint()
 				},
 			}, {
 				New("UICorner", {
-					CornerRadius = UDim.new(0, 8),
+					CornerRadius = UDim.new(0, WINDOW_CORNER),
 				}),
 			}),
 
@@ -2108,7 +2126,7 @@ function AcrylicPaint()
 				ZIndex = 2,
 			}, {
 				New("UICorner", {
-					CornerRadius = UDim.new(0, 8),
+					CornerRadius = UDim.new(0, WINDOW_CORNER),
 				}),
 				New("UIStroke", {
 					Transparency = 0.5,
@@ -3345,10 +3363,11 @@ Components.Dialog = (function()
 			Size = UDim2.fromScale(1, 1),
 			BackgroundColor3 = Color3.fromRGB(0, 0, 0),
 			BackgroundTransparency = 1,
+			ZIndex = 50,
 			Parent = Dialog.Window.Root,
 		}, {
 			New("UICorner", {
-				CornerRadius = UDim.new(0, 8),
+				CornerRadius = UDim.new(0, WINDOW_CORNER),
 			}),
 		})
 
@@ -3594,7 +3613,7 @@ Components.Notification = (function()
 			BackgroundTransparency = 1,
 		}, {
 			New("ImageLabel", {
-				Image = Components.Close,
+				Image = Components.Assets.Close,
 				Size = UDim2.fromOffset(16, 16),
 				Position = UDim2.fromScale(0.5, 0.5),
 				AnchorPoint = Vector2.new(0.5, 0.5),
@@ -3841,182 +3860,565 @@ end)()
 Components.TitleBar = (function()
 	local New = Creator.New
 	local AddSignal = Creator.AddSignal
+	local Spring = Flipper.Spring.new
 
-	local function parseColor(value)
-		if typeof(value) == "Color3" then return value end
-		if typeof(value) == "string" then
-			local hex = value:gsub("#","")
-			if #hex == 6 then
-				local r = tonumber(hex:sub(1,2), 16) or 255
-				local g = tonumber(hex:sub(3,4), 16) or 255
-				local b = tonumber(hex:sub(5,6), 16) or 255
-				return Color3.fromRGB(r,g,b)
-			end
+	local BAR_H = TITLEBAR_HEIGHT
+	local INNER_H = BAR_H - 12
+	local BTN = Mobile and 34 or 28
+	local PITCH = BTN + (Mobile and 6 or 4)
+	local GlyphTween = TweenInfo.new(0.26, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+	local CLOSE_RED = Color3.fromRGB(232, 72, 72)
+
+	local function hashString(str)
+		local h = 5381
+		for i = 1, #str do
+			h = (h * 33 + string.byte(str, i)) % 4294967296
 		end
-		return Themes[Library.Theme].SubText or Color3.fromRGB(170,170,170)
+		return h
+	end
+
+	-- Accepts: "rbxassetid://123" | 123 | "123" | "avatar"/"player" | "rbxthumb://..." | "https://...png"
+	-- Apply(image) is optional and is called later for sources that must be downloaded.
+	local function ResolveIcon(value, Apply)
+		if value == nil then
+			return nil
+		end
+		if type(value) == "number" then
+			return "rbxassetid://" .. string.format("%d", value)
+		end
+		if type(value) ~= "string" or value == "" then
+			return nil
+		end
+
+		local lower = string.lower(value)
+
+		if lower == "avatar" or lower == "player" or lower == "headshot" or lower == "me" then
+			return "rbxthumb://type=AvatarHeadShot&id=" .. tostring(LocalPlayer.UserId) .. "&w=150&h=150"
+		end
+
+		if string.match(value, "^%d+$") then
+			return "rbxassetid://" .. value
+		end
+
+		if string.match(lower, "^https?://") then
+			-- game:HttpGet YIELDS, and this runs while the window is being built, so
+			-- never download inline. A cached copy resolves instantly; anything else
+			-- is fetched on another thread and applied through Apply() when it lands.
+			if RunService:IsStudio() or not (writefile and isfile and getcustomasset) then
+				return nil
+			end
+			local ext = string.match(lower, "%.(%a%a%a%a?)$") or "png"
+			local file = "FluentTopBar_" .. tostring(hashString(value)) .. "." .. ext
+
+			local cached = nil
+			pcall(function()
+				if isfile(file) then
+					cached = getcustomasset(file)
+				end
+			end)
+			if type(cached) == "string" and cached ~= "" then
+				return cached
+			end
+
+			if Apply then
+				task.spawn(function()
+					local ok, asset = pcall(function()
+						writefile(file, game:HttpGet(value))
+						return getcustomasset(file)
+					end)
+					if ok and type(asset) == "string" and asset ~= "" then
+						Apply(asset)
+					else
+						warn("[Fluent] could not load the top bar photo from " .. value)
+					end
+				end)
+			end
+			return nil
+		end
+
+		return value
 	end
 
 	return function(Config)
 		local TitleBar = {}
+		local Buttons = {}
+		local BarInside = false
 
-		local function BarButton(Icon, Pos, Parent, Callback)
+		local function AnyButtonHovered()
+			for _, b in ipairs(Buttons) do
+				if b.Hovered then
+					return true
+				end
+			end
+			return false
+		end
+		local BarHoverIn, BarHoverOut -- forward declared, assigned once the bar exists
+
+		----------------------------------------------------------------
+		--  Tooltip
+		----------------------------------------------------------------
+		local TipLabel = New("TextLabel", {
+			Name = "Label",
+			Text = "",
+			RichText = false,
+			FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium, Enum.FontStyle.Normal),
+			TextSize = 12,
+			TextTransparency = 1,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(0, 0, 1, 0),
+			BackgroundTransparency = 1,
+			ZIndex = 42,
+			ThemeTag = { TextColor3 = "Text" },
+		})
+
+		local TipStroke = New("UIStroke", {
+			Thickness = 1,
+			Transparency = 1,
+			ThemeTag = { Color = "DialogBorder" },
+		})
+
+		local Tip = New("Frame", {
+			Name = "Tooltip",
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.fromOffset(0, 22),
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.fromOffset(0, BAR_H - 4),
+			BackgroundTransparency = 1,
+			Visible = false,
+			ZIndex = 41,
+			ThemeTag = { BackgroundColor3 = "DialogHolder" },
+		}, {
+			New("UICorner", { CornerRadius = UDim.new(0, 6) }),
+			TipStroke,
+			New("UIPadding", {
+				PaddingLeft = UDim.new(0, 9),
+				PaddingRight = UDim.new(0, 9),
+			}),
+			TipLabel,
+		})
+
+		local TipBgMotor, SetTipBg = Creator.SpringMotor(1, Tip, "BackgroundTransparency", true)
+		local TipTextMotor, SetTipText = Creator.SpringMotor(1, TipLabel, "TextTransparency", true)
+		local TipStrokeMotor, SetTipStroke = Creator.SpringMotor(1, TipStroke, "Transparency", true)
+
+		local TipToken = 0
+		local function HideTip()
+			TipToken = TipToken + 1
+			SetTipBg(1)
+			SetTipText(1)
+			SetTipStroke(1)
+			local myToken = TipToken
+			task.delay(0.2, function()
+				if myToken == TipToken then
+					Tip.Visible = false
+				end
+			end)
+		end
+
+		local function ShowTip(text, anchorButton)
+			TipToken = TipToken + 1
+			local myToken = TipToken
+			task.delay(0.35, function()
+				if myToken ~= TipToken then
+					return
+				end
+				TipLabel.Text = text
+				Tip.Visible = true
+				local barX = TitleBar.Frame and TitleBar.Frame.AbsolutePosition.X or 0
+				local btnX = anchorButton.AbsolutePosition.X
+				Tip.Position = UDim2.fromOffset(math.floor(btnX - barX + BTN / 2), BAR_H - 4)
+				SetTipBg(0.08)
+				SetTipText(0)
+				SetTipStroke(0.45)
+			end)
+		end
+
+		----------------------------------------------------------------
+		--  Glyphs drawn with frames (crisp + themeable + animatable)
+		----------------------------------------------------------------
+		local function GlyphBar(name, w, h, xOff, yOff, rot)
+			return New("Frame", {
+				Name = name,
+				Size = UDim2.fromOffset(w, h),
+				Position = UDim2.new(0.5, xOff, 0.5, yOff),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Rotation = rot or 0,
+				BackgroundTransparency = 0.1,
+				ZIndex = 8,
+				ThemeTag = { BackgroundColor3 = "Text" },
+			}, {
+				New("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			})
+		end
+
+		local function BarButton(Kind, Index, TipText, Callback)
 			local Button = {
+				Kind = Kind,
 				Callback = Callback or function() end,
 			}
 
-			local isTextIcon = type(Icon) == "string" and #Icon <= 4
-			local iconChild
-			if isTextIcon then
-				iconChild = New("TextLabel", {
-					Text = Icon,
-					TextSize = 14,
-					FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold, Enum.FontStyle.Normal),
-					Size = UDim2.fromScale(1, 1),
+			local Glyph = New("Frame", {
+				Name = "Icon",
+				Size = UDim2.fromOffset(14, 14),
+				Position = UDim2.fromScale(0.5, 0.5),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				BackgroundTransparency = 1,
+				ZIndex = 7,
+			}, {})
+
+			Button.Glyph = Glyph
+			Button.Bars = {}
+
+			if Kind == "min" then
+				Button.Bars.A = GlyphBar("A", 7, 2, -3, 0, 0)
+				Button.Bars.B = GlyphBar("B", 7, 2, 3, 0, 0)
+				Button.Bars.A.Parent = Glyph
+				Button.Bars.B.Parent = Glyph
+			elseif Kind == "max" then
+				Button.BackStroke = New("UIStroke", {
+					Thickness = 1.6,
+					Transparency = 1,
+					ThemeTag = { Color = "Text" },
+				})
+				Button.FrontStroke = New("UIStroke", {
+					Thickness = 1.6,
+					Transparency = 0.1,
+					ThemeTag = { Color = "Text" },
+				})
+				Button.Back = New("Frame", {
+					Name = "Back",
+					Size = UDim2.fromOffset(9, 9),
+					Position = UDim2.new(0.5, 2, 0.5, -2),
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					BackgroundTransparency = 1,
+					ZIndex = 7,
+				}, {
+					New("UICorner", { CornerRadius = UDim.new(0, 3) }),
+					Button.BackStroke,
+				})
+				Button.Front = New("Frame", {
+					Name = "Front",
+					Size = UDim2.fromOffset(11, 11),
 					Position = UDim2.fromScale(0.5, 0.5),
 					AnchorPoint = Vector2.new(0.5, 0.5),
 					BackgroundTransparency = 1,
-					TextXAlignment = Enum.TextXAlignment.Center,
-					TextYAlignment = Enum.TextYAlignment.Center,
-					Name = "Icon",
-					ZIndex = 6,
-					ThemeTag = {
-						TextColor3 = "Text",
-					},
+					ZIndex = 8,
+				}, {
+					New("UICorner", { CornerRadius = UDim.new(0, 3) }),
+					Button.FrontStroke,
 				})
+				Button.Back.Parent = Glyph
+				Button.Front.Parent = Glyph
 			else
-				iconChild = New("ImageLabel", {
-					Image = Icon,
-					Size = UDim2.fromOffset(14, 14),
-					Position = UDim2.fromScale(0.5, 0.5),
-					AnchorPoint = Vector2.new(0.5, 0.5),
-					BackgroundTransparency = 1,
-					Name = "Icon",
-					ZIndex = 6,
-					ThemeTag = {
-						ImageColor3 = "Text",
-					},
-				})
+				Button.Bars.A = GlyphBar("A", 13, 2, 0, 0, 45)
+				Button.Bars.B = GlyphBar("B", 13, 2, 0, 0, -45)
+				Button.Bars.A.Parent = Glyph
+				Button.Bars.B.Parent = Glyph
 			end
 
-			Button.Frame = New("TextButton", {
-				Size = UDim2.new(0, 28, 0, 28),
+			local props = {
+				Name = "TitleBarButton_" .. Kind,
+				Size = UDim2.fromOffset(BTN, BTN),
 				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -6 - (Index - 1) * PITCH, 0.5, 0),
 				BackgroundTransparency = 1,
-				Parent = Parent,
-				Position = Pos,
+				AutoButtonColor = false,
 				Text = "",
-				ZIndex = 5,
-				ThemeTag = {
-					BackgroundColor3 = "Tab",
-				},
-			}, {
-				New("UICorner", {
-					CornerRadius = UDim.new(0, 6),
-				}),
-				iconChild,
+				ZIndex = 6,
+			}
+			if Kind == "close" then
+				props.BackgroundColor3 = CLOSE_RED
+			else
+				props.ThemeTag = { BackgroundColor3 = "Tab" }
+			end
+
+			Button.Frame = New("TextButton", props, {
+				New("UICorner", { CornerRadius = UDim.new(0, 8) }),
+				Glyph,
 			})
 
-			local Motor, SetTransparency = Creator.SpringMotor(1, Button.Frame, "BackgroundTransparency")
+			local BgMotor, SetBg = Creator.SpringMotor(1, Button.Frame, "BackgroundTransparency", true)
+			local ScaleObj = New("UIScale", { Scale = 1, Parent = Button.Frame })
+			local ScaleMotor, SetScale = Creator.SpringMotor(1, ScaleObj, "Scale", true)
 
-			AddSignal(Button.Frame.MouseEnter, function()
-				SetTransparency(0.80)
-			end)
-			AddSignal(Button.Frame.MouseLeave, function()
-				SetTransparency(1, true)
-			end)
-			AddSignal(Button.Frame.MouseButton1Down, function()
-				SetTransparency(0.70)
-			end)
-			AddSignal(Button.Frame.MouseButton1Up, function()
-				SetTransparency(0.80)
-			end)
-			AddSignal(Button.Frame.MouseButton1Click, Button.Callback)
-
-			Button.SetCallback = function(Func)
-				Button.Callback = Func
+			local function TintGlyph(color)
+				for _, bar in pairs(Button.Bars) do
+					TweenService:Create(bar, GlyphTween, { BackgroundColor3 = color }):Play()
+				end
 			end
 
+			AddSignal(Button.Frame.MouseEnter, function()
+				Button.Hovered = true
+				if BarHoverIn then
+					BarHoverIn()
+				end
+				SetBg(Kind == "close" and 0.12 or 0.8)
+				SetScale(1.08)
+				if Kind == "close" then
+					TintGlyph(Color3.fromRGB(255, 255, 255))
+				end
+				ShowTip(TipText, Button.Frame)
+			end)
+			AddSignal(Button.Frame.MouseLeave, function()
+				Button.Hovered = false
+				if BarHoverOut then
+					BarHoverOut()
+				end
+				SetBg(1, true)
+				SetScale(1)
+				if Kind == "close" then
+					TintGlyph(Creator.GetThemeProperty("Text") or Color3.fromRGB(240, 240, 240))
+				end
+				HideTip()
+			end)
+			AddSignal(Button.Frame.MouseButton1Down, function()
+				SetBg(Kind == "close" and 0 or 0.68)
+				SetScale(0.9)
+			end)
+			AddSignal(Button.Frame.MouseButton1Up, function()
+				SetBg(Kind == "close" and 0.12 or 0.8)
+				SetScale(1.08)
+			end)
+			AddSignal(Button.Frame.MouseButton1Click, function()
+				HideTip()
+				Button.Callback()
+			end)
+
+			-- GUI input bubbles up to the bar, which owns the window drag and the
+			-- double-click-to-maximize. The child fires first, so stamping here lets
+			-- the bar's own handler bail out of a press that landed on a button.
+			AddSignal(Button.Frame.InputBegan, function(Input)
+				if
+					Input.UserInputType == Enum.UserInputType.MouseButton1
+					or Input.UserInputType == Enum.UserInputType.Touch
+				then
+					TitleBar.ButtonPress = os.clock()
+				end
+			end)
+
+			Button.SetCallback = function(Func)
+				Button.Callback = Func or function() end
+			end
+
+			table.insert(Buttons, Button)
 			return Button
 		end
 
-		TitleBar.Frame = New("Frame", {
-			Size = UDim2.new(1, 0, 0, 42),
+		----------------------------------------------------------------
+		--  Left cluster : photo + hub name + subtitle
+		----------------------------------------------------------------
+		local ApplyIcon -- forward declared, defined once IconImage exists
+		local resolvedIcon = ResolveIcon(Config.Icon, function(image)
+			if ApplyIcon then
+				ApplyIcon(image)
+			end
+		end)
+		local iconRadius = (Config.IconCorner == "square" and UDim.new(0, 2))
+			or (Config.IconCorner == "rounded" and UDim.new(0, 8))
+			or UDim.new(1, 0)
+
+		local IconImage = New("ImageLabel", {
+			Name = "Photo",
+			Image = resolvedIcon or "",
+			Size = UDim2.fromScale(1, 1),
 			BackgroundTransparency = 1,
-			Parent = Config.Parent,
+			ScaleType = Enum.ScaleType.Crop,
+			ResampleMode = Enum.ResamplerMode.Default,
+			ZIndex = 6,
 		}, {
-			New("Frame", {
-				Size = UDim2.new(1, -16, 1, 0),
-				Position = UDim2.new(0, 12, 0, 0),
-				BackgroundTransparency = 1,
-			}, {
-				New("UIListLayout", {
-					Padding = UDim.new(0, 5),
-					FillDirection = Enum.FillDirection.Horizontal,
-					SortOrder = Enum.SortOrder.LayoutOrder,
-					VerticalAlignment = Enum.VerticalAlignment.Center,
-				}),
+			New("UICorner", { CornerRadius = iconRadius }),
+		})
 
-				Config.Icon and New("ImageLabel", {
-					Image = Config.Icon,
-					Size = UDim2.fromOffset(20, 20),
-					BackgroundTransparency = 1,
-					LayoutOrder = 1,
-					ThemeTag = {
-						ImageColor3 = "Text",
-					},
-				}) or nil,
-
-				New("TextLabel", {
-					RichText = true,
-					Text = Config.Title,
-					FontFace = Font.new(
-						"rbxasset://fonts/families/GothamSSm.json",
-						Enum.FontWeight.SemiBold,
-						Enum.FontStyle.Normal
-					),
-					TextSize = 13,
-					TextXAlignment = Enum.TextXAlignment.Left,
-					TextYAlignment = Enum.TextYAlignment.Center,
-					Size = UDim2.fromScale(0, 1),
-					AutomaticSize = Enum.AutomaticSize.X,
-					BackgroundTransparency = 1,
-					LayoutOrder = Config.Icon and 2 or 1,
-					ThemeTag = {
-						TextColor3 = "Text",
-					},
-				}),
-				Config.SubTitle and New("TextLabel", {
-					RichText = true,
-					Text = Config.SubTitle,
-					TextTransparency = 0.4,
-					FontFace = Font.new(
-						"rbxasset://fonts/families/GothamSSm.json",
-						Enum.FontWeight.Regular,
-						Enum.FontStyle.Normal
-					),
-					TextSize = 13,
-					TextXAlignment = Enum.TextXAlignment.Left,
-					TextYAlignment = Enum.TextYAlignment.Center,
-					Size = UDim2.fromScale(0, 1),
-					AutomaticSize = Enum.AutomaticSize.X,
-					BackgroundTransparency = 1,
-					LayoutOrder = Config.Icon and 3 or 2,
-					ThemeTag = {
-						TextColor3 = "Text",
-					},
-				}) or nil,
-
-			}),
-			New("Frame", {
-				BackgroundTransparency = 0.5,
-				Size = UDim2.new(1, 0, 0, 1),
-				Position = UDim2.new(0, 0, 1, 0),
-				ThemeTag = {
-					BackgroundColor3 = "TitleBarLine",
-				},
+		local IconHolder = New("Frame", {
+			Name = "PhotoHolder",
+			Size = UDim2.fromOffset(26, 26),
+			BackgroundTransparency = resolvedIcon and 1 or 0.6,
+			Visible = resolvedIcon ~= nil,
+			LayoutOrder = 1,
+			ZIndex = 6,
+			ThemeTag = { BackgroundColor3 = "Element" },
+		}, {
+			New("UICorner", { CornerRadius = iconRadius }),
+			IconImage,
+			New("UIStroke", {
+				Thickness = 1,
+				Transparency = 0.55,
+				ThemeTag = { Color = "InElementBorder" },
 			}),
 		})
-		TitleBar.CloseButton = BarButton(Components.Assets.Close, UDim2.new(1, -6, 0.5, 0), TitleBar.Frame, function()
+
+		local TitleLabel = New("TextLabel", {
+			Name = "HubName",
+			RichText = true,
+			Text = Config.Title or "Hub",
+			FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold, Enum.FontStyle.Normal),
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			Size = UDim2.fromScale(0, 1),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 1,
+			LayoutOrder = 2,
+			ZIndex = 6,
+			ThemeTag = { TextColor3 = "Text" },
+		}, {
+			New("UISizeConstraint", { MaxSize = Vector2.new(230, math.huge) }),
+		})
+
+		local Divider = New("Frame", {
+			Name = "Divider",
+			Size = UDim2.fromOffset(1, 14),
+			BackgroundTransparency = 0.55,
+			Visible = (Config.SubTitle ~= nil and Config.SubTitle ~= ""),
+			LayoutOrder = 3,
+			ZIndex = 6,
+			ThemeTag = { BackgroundColor3 = "InElementBorder" },
+		}, {})
+
+		local SubTitleLabel = New("TextLabel", {
+			Name = "SubTitle",
+			RichText = true,
+			Text = Config.SubTitle or "",
+			TextTransparency = 0.25,
+			FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium, Enum.FontStyle.Normal),
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			Size = UDim2.fromScale(0, 1),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 1,
+			Visible = (Config.SubTitle ~= nil and Config.SubTitle ~= ""),
+			LayoutOrder = 4,
+			ZIndex = 6,
+			ThemeTag = { TextColor3 = "SubText" },
+		}, {
+			New("UISizeConstraint", { MaxSize = Vector2.new(260, math.huge) }),
+		})
+
+		local LeftCluster = New("Frame", {
+			Name = "Left",
+			Size = UDim2.new(1, -(18 + 3 * PITCH), 1, 0),
+			Position = UDim2.fromOffset(10, 0),
+			BackgroundTransparency = 1,
+			ClipsDescendants = true,
+			ZIndex = 6,
+		}, {
+			New("UIListLayout", {
+				Padding = UDim.new(0, 9),
+				FillDirection = Enum.FillDirection.Horizontal,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				VerticalAlignment = Enum.VerticalAlignment.Center,
+			}),
+			IconHolder,
+			TitleLabel,
+			Divider,
+			SubTitleLabel,
+		})
+
+		----------------------------------------------------------------
+		--  The bar itself : rounded, elevated, animated
+		----------------------------------------------------------------
+		local BarStroke = New("UIStroke", {
+			Thickness = 1,
+			Transparency = 0.6,
+			ThemeTag = { Color = "InElementBorder" },
+		})
+
+		local Bar = New("Frame", {
+			Name = "Bar",
+			Size = UDim2.new(1, -20, 0, INNER_H),
+			Position = UDim2.new(0, 10, 0, 6),
+			BackgroundTransparency = 0.55,
+			ZIndex = 5,
+			ThemeTag = { BackgroundColor3 = "Element" },
+		}, {
+			New("UICorner", { CornerRadius = UDim.new(0, 10) }),
+			New("UIGradient", {
+				Rotation = 90,
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0),
+					NumberSequenceKeypoint.new(1, 0.45),
+				}),
+			}),
+			BarStroke,
+			LeftCluster,
+		})
+
+		local AccentLine = New("Frame", {
+			Name = "AccentLine",
+			Size = UDim2.new(0, 0, 0, 2),
+			Position = UDim2.new(0.5, 0, 1, -1),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			BackgroundTransparency = 0.25,
+			ZIndex = 9,
+			ThemeTag = { BackgroundColor3 = "Accent" },
+		}, {
+			New("UICorner", { CornerRadius = UDim.new(1, 0) }),
+		})
+		AccentLine.Parent = Bar
+
+		TitleBar.Frame = New("Frame", {
+			Name = "TitleBar",
+			Size = UDim2.new(1, 0, 0, BAR_H),
+			Position = UDim2.fromOffset(0, 0),
+			BackgroundTransparency = 1,
+			ZIndex = 4,
+			Parent = Config.Parent,
+		}, {
+			Bar,
+			Tip,
+		})
+
+		TitleBar.Bar = Bar
+		TitleBar.Height = BAR_H
+		TitleBar.TitleLabel = TitleLabel
+		TitleBar.SubTitleLabel = SubTitleLabel
+		TitleBar.IconImage = IconImage
+		TitleBar.IconHolder = IconHolder
+
+		-- hover lift on the whole bar
+		local BarBgMotor, SetBarBg = Creator.SpringMotor(0.55, Bar, "BackgroundTransparency", true)
+		local BarStrokeMotor, SetBarStroke = Creator.SpringMotor(0.6, BarStroke, "Transparency", true)
+
+		BarHoverIn = function()
+			SetBarBg(0.4)
+			SetBarStroke(0.35)
+			TweenService:Create(AccentLine, TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+				Size = UDim2.new(1, -24, 0, 2),
+			}):Play()
+		end
+
+		-- a child TextButton steals the pointer and fires Bar.MouseLeave, so settle a
+		-- couple of frames later and only retract when nothing in the bar is hovered
+		BarHoverOut = function()
+			task.delay(0.06, function()
+				if BarInside or AnyButtonHovered() then
+					return
+				end
+				SetBarBg(0.55, true)
+				SetBarStroke(0.6, true)
+				TweenService:Create(AccentLine, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+					Size = UDim2.new(0, 0, 0, 2),
+				}):Play()
+			end)
+		end
+
+		AddSignal(Bar.MouseEnter, function()
+			BarInside = true
+			BarHoverIn()
+		end)
+		AddSignal(Bar.MouseLeave, function()
+			BarInside = false
+			BarHoverOut()
+		end)
+
+		----------------------------------------------------------------
+		--  Buttons  (right to left : close, maximize, minimize)
+		----------------------------------------------------------------
+		TitleBar.CloseButton = BarButton("close", 1, "Unload", function()
 			Library.Window:Dialog({
 				Title = "Close",
 				Content = "Are you sure you want to unload the interface?",
@@ -4033,12 +4435,74 @@ Components.TitleBar = (function()
 				},
 			})
 		end)
-		TitleBar.MaxButton = BarButton(Components.Assets.Max, UDim2.new(1, -40, 0.5, 0), TitleBar.Frame, function()
+
+		TitleBar.MaxButton = BarButton("max", 2, "Maximize", function()
 			Config.Window.Maximize(not Config.Window.Maximized)
 		end)
-		TitleBar.MinButton = BarButton(Components.Assets.Min, UDim2.new(1, -74, 0.5, 0), TitleBar.Frame, function()
-			Library.Window:Minimize()
+
+		TitleBar.MinButton = BarButton("min", 3, "Minimize", function()
+			if Config.Window.ToggleCollapse then
+				Config.Window.ToggleCollapse()
+			else
+				Library.Window:Minimize()
+			end
 		end)
+
+		TitleBar.CloseButton.Frame.Parent = Bar
+		TitleBar.MaxButton.Frame.Parent = Bar
+		TitleBar.MinButton.Frame.Parent = Bar
+
+		TitleBar.Buttons = Buttons
+		TitleBar.IsButtonHovered = AnyButtonHovered
+
+		----------------------------------------------------------------
+		--  State setters
+		----------------------------------------------------------------
+		function TitleBar.SetCollapsed(Value)
+			local btn = TitleBar.MinButton
+			local rot = Value and 26 or 0
+			local yOff = Value and -1 or 0
+			TweenService:Create(btn.Bars.A, GlyphTween, {
+				Rotation = rot,
+				Position = UDim2.new(0.5, -3, 0.5, yOff),
+			}):Play()
+			TweenService:Create(btn.Bars.B, GlyphTween, {
+				Rotation = -rot,
+				Position = UDim2.new(0.5, 3, 0.5, yOff),
+			}):Play()
+		end
+
+		function TitleBar.SetMaximized(Value)
+			local btn = TitleBar.MaxButton
+			TweenService:Create(btn.Front, GlyphTween, {
+				Size = UDim2.fromOffset(Value and 9 or 11, Value and 9 or 11),
+				Position = Value and UDim2.new(0.5, -2, 0.5, 2) or UDim2.fromScale(0.5, 0.5),
+			}):Play()
+			TweenService:Create(btn.BackStroke, GlyphTween, {
+				Transparency = Value and 0.45 or 1,
+			}):Play()
+		end
+
+		function TitleBar.SetTitle(Text)
+			TitleLabel.Text = tostring(Text or "")
+		end
+
+		function TitleBar.SetSubTitle(Text)
+			Text = tostring(Text or "")
+			SubTitleLabel.Text = Text
+			SubTitleLabel.Visible = Text ~= ""
+			Divider.Visible = Text ~= ""
+		end
+
+		ApplyIcon = function(image)
+			IconImage.Image = image or ""
+			IconHolder.Visible = image ~= nil and image ~= ""
+			IconHolder.BackgroundTransparency = (image and image ~= "") and 1 or 0.6
+		end
+
+		function TitleBar.SetIcon(Value)
+			ApplyIcon(ResolveIcon(Value, ApplyIcon))
+		end
 
 		return TitleBar
 	end
@@ -4069,10 +4533,17 @@ Components.Window = (function()
 		local function CenterWindow()
 			local vp = Camera.ViewportSize
 			local x = math.max(0, (vp.X - Window.Size.X.Offset) / 2)
-			local y = math.max(0, (vp.Y - Window.Size.Y.Offset) / 2)
+			local liveH = Window.Collapsed and (TITLEBAR_HEIGHT + 2) or Window.Size.Y.Offset
+			local y = math.max(0, (vp.Y - liveH) / 2)
 			Window.Position = UDim2.fromOffset(math.floor(x), math.floor(y))
 			if Window.Root then
 				Window.Root.Position = Window.Position
+			end
+			if Window.PosMotor then
+				Window.PosMotor:setGoal({
+					X = Flipper.Instant.new(Window.Position.X.Offset),
+					Y = Flipper.Instant.new(Window.Position.Y.Offset),
+				})
 			end
 		end
 		Window.TabWidth = Config.TabWidth or 150
@@ -4384,7 +4855,7 @@ Components.Window = (function()
 			if Window.ShowSearch then
 				tabHolderTop = topOffset + searchHeight + 6
 			else
-				tabHolderTop = 45
+				tabHolderTop = 10
 			end
 		end
 		Window.TabHolderTop = tabHolderTop
@@ -4486,8 +4957,8 @@ Components.Window = (function()
 		local totalOffset = (Window.ShowSearch and searchHeight or 0) + imageOffset
 
 		local TabFrame = New("Frame", {
-			Size = UDim2.new(0, Window.TabWidth, 1, Window.ShowSearch and -63 or -31),
-			Position = UDim2.new(0, 12, 0, Window.ShowSearch and 54 or 19),
+			Size = UDim2.new(0, Window.TabWidth, 1, -(TITLEBAR_HEIGHT + 21)),
+			Position = UDim2.new(0, 12, 0, TITLEBAR_HEIGHT + 12),
 			BackgroundTransparency = 1,
 			ClipsDescendants = true,
 		}, {
@@ -4510,7 +4981,7 @@ Components.Window = (function()
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Center,
 			Size = UDim2.new(1, -16, 0, 28),
-			Position = UDim2.fromOffset(Window.TabWidth + 26, 56),
+			Position = UDim2.fromOffset(Window.TabWidth + 26, TITLEBAR_HEIGHT + 14),
 			BackgroundTransparency = 1,
 			ThemeTag = {
 				TextColor3 = "Text",
@@ -4529,8 +5000,8 @@ Components.Window = (function()
 		})
 
 		Window.ContainerCanvas = New("Frame", {
-			Size = UDim2.new(1, -Window.TabWidth - 32, 1, -102),
-			Position = UDim2.fromOffset(Window.TabWidth + 26, 90),
+			Size = UDim2.new(1, -Window.TabWidth - 32, 1, -(TITLEBAR_HEIGHT + 60)),
+			Position = UDim2.fromOffset(Window.TabWidth + 26, TITLEBAR_HEIGHT + 48),
 			BackgroundTransparency = 1,
 			ClipsDescendants = true,
 		}, {
@@ -4564,7 +5035,7 @@ Components.Window = (function()
 				ScaleType = Enum.ScaleType.Stretch,
 			}, {
 				New("UICorner", {
-					CornerRadius = UDim.new(0, 8),
+					CornerRadius = UDim.new(0, WINDOW_CORNER),
 				}),
 			})
 			Window.BackgroundImage = BackgroundImageFrame
@@ -4603,10 +5074,23 @@ Components.Window = (function()
 			end
 		end
 
+		-- Everything below the top bar lives in a clipped Body frame. Shrinking the
+		-- window down to the bar then rolls the content up instead of overflowing.
+		-- Root itself must NOT clip: the resize grip and the acrylic border hang
+		-- outside its rectangle on purpose.
+		Window.Body = New("Frame", {
+			Name = "Body",
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			ClipsDescendants = true,
+		}, {
+			Window.TabDisplay,
+			Window.ContainerCanvas,
+			TabFrame,
+		})
+
 		table.insert(rootChildren, Window.AcrylicPaint.Frame)
-		table.insert(rootChildren, Window.TabDisplay)
-		table.insert(rootChildren, Window.ContainerCanvas)
-		table.insert(rootChildren, TabFrame)
+		table.insert(rootChildren, Window.Body)
 		table.insert(rootChildren, ResizeStartFrame)
 
 		Window.Root = New("Frame", {
@@ -4621,10 +5105,16 @@ Components.Window = (function()
 			CenterWindow()
 		end)
 
+		Window.Title = Config.Title
+		Window.DisplayTitle = Config.Title
+		Window.SubTitle = Config.SubTitle
+		Window.Icon = Config.Icon
+
 		Window.TitleBar = Components.TitleBar({
 			Title = Config.Title,
 			SubTitle = Config.SubTitle,
 			Icon = Config.Icon,
+			IconCorner = Config.IconCorner,
 			Parent = Window.Root,
 			Window = Window,
 			UserInfoTitle = Config.UserInfoTitle,
@@ -4642,7 +5132,8 @@ Components.Window = (function()
 			local userInfoHeight = 56
 			Window.UserInfoHeight = userInfoHeight
 			Window.UserInfoTop = Config.UserInfoTop
-			local UserInfoSection = New("Frame", {
+			local UserInfoSection
+			UserInfoSection = New("Frame", {
 				Name = "UserInfoSection",
 				BackgroundTransparency = 1,
 				Size = UDim2.new(1, 0, 0, userInfoHeight),
@@ -4650,8 +5141,9 @@ Components.Window = (function()
 				ZIndex = 15,
 				Parent = TabFrame,
 			})
+			Window.UserInfoSection = UserInfoSection
 
-			New("Frame", {
+			Window.UserInfoSeparator = New("Frame", {
 				Name = "UserInfoSeparator",
 				BackgroundTransparency = 0.5,
 				Size = UDim2.new(1, 0, 0, 1),
@@ -4720,17 +5212,17 @@ Components.Window = (function()
 			if Config.UserInfoTop then
 				local topOffset = Window.TopOffset or 0
 				local imageOffset = hasImage and (imageSize + 10 + topOffset) or topOffset
-				TabFrame.Position = UDim2.new(0, 12, 0, 39)
-				TabFrame.Size = UDim2.new(0, Window.TabWidth, 1, -(31 + imageOffset + userInfoHeight))
+				TabFrame.Position = UDim2.new(0, 12, 0, TITLEBAR_HEIGHT - 3)
+				TabFrame.Size = UDim2.new(0, Window.TabWidth, 1, -(TITLEBAR_HEIGHT + 6))
 				local searchOffset = hasImage and (imageSize + 10 + topOffset) or topOffset
 				SearchFrame.Position = UDim2.new(0, 0, 0, userInfoHeight + 6 + searchOffset)
 				if ImageFrame then
-					ImageFrame.Position = UDim2.new(0.5, 0, 0, userInfoHeight + topOffset)
+					ImageFrame.Position = UDim2.new(0.5, 0, 0, userInfoHeight + 6 + topOffset)
 				end
 				local newTabHolderTop = userInfoHeight + 6 + (hasImage and (imageSize + 10 + topOffset) or topOffset) + (Window.ShowSearch and (searchHeight + 6) or 0)
 				Window.TabHolderTop = newTabHolderTop
 				Window.TabHolder.Position = UDim2.new(0, 0, 0, newTabHolderTop)
-				Window.TabHolder.Size = UDim2.new(1, 0, 1, -(newTabHolderTop + 6 + userInfoHeight))
+				Window.TabHolder.Size = UDim2.new(1, 0, 1, -(newTabHolderTop + 6))
 				if Window.UpdateTabHolderLayout then
 					Window:UpdateTabHolderLayout(newTabHolderTop)
 				end
@@ -4755,6 +5247,9 @@ Components.Window = (function()
 			X = Window.Position.X.Offset,
 			Y = Window.Position.Y.Offset,
 		})
+
+		Window.SizeMotor = SizeMotor
+		Window.PosMotor = PosMotor
 
 		Window.SelectorPosMotor = Flipper.SingleMotor.new(0)
 		Window.SelectorSizeMotor = Flipper.SingleMotor.new(0)
@@ -4810,39 +5305,325 @@ Components.Window = (function()
 
 		local OldSizeX
 		local OldSizeY
+		local OldPosX
+		local OldPosY
+		local EntranceCancelled = false
+
+		Window.Corners = {}
+		if Window.AcrylicPaint and Window.AcrylicPaint.Frame then
+			for _, v in ipairs(Window.AcrylicPaint.Frame:GetDescendants()) do
+				if v:IsA("UICorner") then
+					table.insert(Window.Corners, v)
+				end
+			end
+		end
+		if Window.BackgroundImage then
+			local c = Window.BackgroundImage:FindFirstChildOfClass("UICorner")
+			if c then
+				table.insert(Window.Corners, c)
+			end
+		end
+
+		Window.SetCornerRadius = function(Radius, Animate)
+			Window.CornerRadius = Radius
+			for _, corner in ipairs(Window.Corners) do
+				if Animate then
+					TweenService:Create(corner, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+						CornerRadius = UDim.new(0, Radius),
+					}):Play()
+				else
+					corner.CornerRadius = UDim.new(0, Radius)
+				end
+			end
+		end
+
 		Window.Maximize = function(Value, NoPos, Instant)
+			Value = Value and true or false
+
+			-- maximizing out of a rolled-up window has to un-roll it first
+			if Window.Collapsed then
+				Window.Collapsed = false
+				ResizeStartFrame.Visible = true
+				if Window.Body then
+					Window.Body.Visible = true
+				end
+				if ImageFrame then
+					ImageFrame.Visible = true
+				end
+				if Window.UserInfoSection then
+					Window.UserInfoSection.Visible = true
+				end
+				if Window.UserInfoSeparator then
+					Window.UserInfoSeparator.Visible = true
+				end
+				if Window.TitleBar and Window.TitleBar.SetCollapsed then
+					Window.TitleBar.SetCollapsed(false)
+				end
+			end
+
+			EntranceCancelled = true
 			Window.Maximized = Value
-			local iconObj = Window.TitleBar.MaxButton.Frame:FindFirstChild("Icon")
-					if iconObj then
-						if iconObj:IsA("TextLabel") then
-							iconObj.Text = Value and Components.Assets.Restore or Components.Assets.Max
-						elseif iconObj:IsA("ImageLabel") then
-							iconObj.Image = Value and Components.Assets.Restore or Components.Assets.Max
-						end
-					end
+			if Window.TitleBar and Window.TitleBar.SetMaximized then
+				Window.TitleBar.SetMaximized(Value)
+			end
 
 			if Value then
 				OldSizeX = Window.Size.X.Offset
 				OldSizeY = Window.Size.Y.Offset
+				OldPosX = Window.Position.X.Offset
+				OldPosY = Window.Position.Y.Offset
 			end
-			local SizeX = Value and Camera.ViewportSize.X or OldSizeX
-			local SizeY = Value and Camera.ViewportSize.Y or OldSizeY
+
+			local SizeX = Value and Camera.ViewportSize.X or (OldSizeX or Window.Size.X.Offset)
+			local SizeY = Value and Camera.ViewportSize.Y or (OldSizeY or Window.Size.Y.Offset)
+
 			SizeMotor:setGoal({
 				X = Flipper[Instant and "Instant" or "Spring"].new(SizeX, { frequency = 6 }),
 				Y = Flipper[Instant and "Instant" or "Spring"].new(SizeY, { frequency = 6 }),
 			})
 			Window.Size = UDim2.fromOffset(SizeX, SizeY)
+			Window.SetCornerRadius(Value and 0 or WINDOW_CORNER, not Instant)
 
 			if not NoPos then
+				local PosX = Value and 0 or (OldPosX or Window.Position.X.Offset)
+				local PosY = Value and 0 or (OldPosY or Window.Position.Y.Offset)
 				PosMotor:setGoal({
-					X = Spring(Value and 0 or Window.Position.X.Offset, { frequency = 6 }),
-					Y = Spring(Value and 0 or Window.Position.Y.Offset, { frequency = 6 }),
+					X = Flipper[Instant and "Instant" or "Spring"].new(PosX, { frequency = 6 }),
+					Y = Flipper[Instant and "Instant" or "Spring"].new(PosY, { frequency = 6 }),
 				})
+				if not Value then
+					Window.Position = UDim2.fromOffset(PosX, PosY)
+				end
 			end
 		end
 
+		----------------------------------------------------------------
+		--  Collapse: roll the window up into its own top bar.
+		--  This is what the top bar's minimize button does, so no floating
+		--  button is needed to bring the interface back.
+		----------------------------------------------------------------
+		Window.Collapsed = false
+		local CollapseToken = 0
+
+		Window.Collapse = function(Value, NoAnim)
+			Value = Value and true or false
+			if Window.Collapsed == Value then
+				return
+			end
+			if Value and Window.Maximized then
+				Window.Maximize(false, false, false)
+			end
+
+			EntranceCancelled = true
+			Window.Collapsed = Value
+			CollapseToken = CollapseToken + 1
+			local Token = CollapseToken
+
+			for _, Option in next, Library.Options do
+				if Option and Option.Type == "Dropdown" and Option.Opened then
+					pcall(function()
+						Option:Close()
+					end)
+				end
+			end
+
+			ResizeStartFrame.Visible = not Value
+			if ImageFrame then
+				ImageFrame.Visible = not Value
+			end
+			if Window.UserInfoSection then
+				Window.UserInfoSection.Visible = not Value
+			end
+			if Window.UserInfoSeparator then
+				Window.UserInfoSeparator.Visible = not Value
+			end
+			if Window.TitleBar and Window.TitleBar.SetCollapsed then
+				Window.TitleBar.SetCollapsed(Value)
+			end
+			if not Value and Window.Body then
+				Window.Body.Visible = true
+			end
+
+			-- NOTE: never write Window.Size here, Maximize snapshots its restore
+			-- size from it and would otherwise restore to the collapsed height.
+			local TargetY = Value and (TITLEBAR_HEIGHT + 2) or Window.Size.Y.Offset
+			SizeMotor:setGoal({
+				X = Flipper[NoAnim and "Instant" or "Spring"].new(Window.Size.X.Offset, { frequency = 6 }),
+				Y = Flipper[NoAnim and "Instant" or "Spring"].new(TargetY, { frequency = 5, dampingRatio = 1 }),
+			})
+
+			if Value and Window.Body then
+				task.delay(NoAnim and 0 or 0.6, function()
+					if Token == CollapseToken and Window.Collapsed then
+						Window.Body.Visible = false
+					end
+				end)
+			end
+		end
+
+		Window.ToggleCollapse = function()
+			Window.Collapse(not Window.Collapsed)
+		end
+
+		function Window:SetCollapsed(Value)
+			Window.Collapse(Value)
+		end
+
+		function Window:SetTitle(Text)
+			Window.DisplayTitle = Text
+			if Window.TitleBar and Window.TitleBar.SetTitle then
+				Window.TitleBar.SetTitle(Text)
+			end
+		end
+
+		function Window:SetSubTitle(Text)
+			Window.SubTitle = Text
+			if Window.TitleBar and Window.TitleBar.SetSubTitle then
+				Window.TitleBar.SetSubTitle(Text)
+			end
+		end
+
+		function Window:SetIcon(Value)
+			Window.Icon = Value
+			if Window.TitleBar and Window.TitleBar.SetIcon then
+				Window.TitleBar.SetIcon(Value)
+			end
+		end
+
+		----------------------------------------------------------------
+		--  Drag by the top bar (Frame.Draggable dragged from anywhere and
+		--  never wrote the new position back into Window.Position)
+		----------------------------------------------------------------
+		local Dragging, DragStart, DragOrigin = false, nil, nil
+		local LastBarPress = 0
+		local DragHandle = Window.TitleBar.Bar or Window.TitleBar.Frame
+
+		Creator.AddSignal(DragHandle.InputBegan, function(Input)
+			if
+				Input.UserInputType ~= Enum.UserInputType.MouseButton1
+				and Input.UserInputType ~= Enum.UserInputType.Touch
+			then
+				return
+			end
+
+			-- GUI input bubbles from the window buttons up to the bar. The button
+			-- stamps ButtonPress first (same frame), so ignore that press here,
+			-- otherwise clicking minimize would also arm the drag and count
+			-- towards the double-click-to-maximize.
+			local TB = Window.TitleBar
+			if TB.ButtonPress and (os.clock() - TB.ButtonPress) < 0.05 then
+				LastBarPress = 0
+				return
+			end
+			-- touch never produces a hover, so only trust the counter for mouse input
+			if
+				Input.UserInputType ~= Enum.UserInputType.Touch
+				and TB.IsButtonHovered
+				and TB.IsButtonHovered()
+			then
+				LastBarPress = 0
+				return
+			end
+
+			local Now = os.clock()
+			if Now - LastBarPress < 0.3 then
+				LastBarPress = 0
+				Dragging = false
+				Window.Maximize(not Window.Maximized)
+				return
+			end
+			LastBarPress = Now
+
+			if Window.Maximized then
+				return
+			end
+
+			-- cancel any position spring still running, or it would fight the drag
+			EntranceCancelled = true
+			PosMotor:setGoal({
+				X = Flipper.Instant.new(Window.Root.Position.X.Offset),
+				Y = Flipper.Instant.new(Window.Root.Position.Y.Offset),
+			})
+
+			Dragging = true
+			DragStart = Input.Position
+			DragOrigin = Window.Root.Position
+		end)
+
+		Creator.AddSignal(UserInputService.InputChanged, function(Input)
+			if not Dragging then
+				return
+			end
+			if
+				Input.UserInputType ~= Enum.UserInputType.MouseMovement
+				and Input.UserInputType ~= Enum.UserInputType.Touch
+			then
+				return
+			end
+			local Delta = Input.Position - DragStart
+			local Viewport = Camera.ViewportSize
+			local Width = Window.Root.AbsoluteSize.X
+			local NewX = math.clamp(DragOrigin.X.Offset + Delta.X, -Width + 120, math.max(0, Viewport.X - 120))
+			local NewY = math.clamp(DragOrigin.Y.Offset + Delta.Y, 0, math.max(0, Viewport.Y - TITLEBAR_HEIGHT))
+			Window.Root.Position = UDim2.fromOffset(NewX, NewY)
+		end)
+
+		Creator.AddSignal(UserInputService.InputEnded, function(Input)
+			if not Dragging then
+				return
+			end
+			if
+				Input.UserInputType == Enum.UserInputType.MouseButton1
+				or Input.UserInputType == Enum.UserInputType.Touch
+			then
+				Dragging = false
+				Window.Position = Window.Root.Position
+				PosMotor:setGoal({
+					X = Flipper.Instant.new(Window.Root.Position.X.Offset),
+					Y = Flipper.Instant.new(Window.Root.Position.Y.Offset),
+				})
+			end
+		end)
+
+		----------------------------------------------------------------
+		--  Entrance animation: spring up from 94% around the centre
+		----------------------------------------------------------------
+		do
+			local TargetW = Window.Size.X.Offset
+			local TargetH = Window.Size.Y.Offset
+			local StartW = math.floor(TargetW * 0.94)
+			local StartH = math.floor(TargetH * 0.94)
+			local StartX = Window.Position.X.Offset + math.floor((TargetW - StartW) / 2)
+			local StartY = Window.Position.Y.Offset + math.floor((TargetH - StartH) / 2)
+
+			Window.Root.Size = UDim2.fromOffset(StartW, StartH)
+			Window.Root.Position = UDim2.fromOffset(StartX, StartY)
+			SizeMotor:setGoal({ X = Flipper.Instant.new(StartW), Y = Flipper.Instant.new(StartH) })
+			PosMotor:setGoal({ X = Flipper.Instant.new(StartX), Y = Flipper.Instant.new(StartY) })
+			-- The motors were built holding the FINAL values, and setGoal alone does not
+			-- move their internal state. Step them once so the Instant goals actually land,
+			-- otherwise the spring below starts from the target and nothing animates.
+			SizeMotor:step(0)
+			PosMotor:step(0)
+
+			task.defer(function()
+				-- the hub may have collapsed / maximized in the meantime
+				if EntranceCancelled or Window.Collapsed or Window.Maximized then
+					return
+				end
+				SizeMotor:setGoal({
+					X = Spring(TargetW, { frequency = 4.5, dampingRatio = 0.85 }),
+					Y = Spring(TargetH, { frequency = 4.5, dampingRatio = 0.85 }),
+				})
+				PosMotor:setGoal({
+					X = Spring(Window.Position.X.Offset, { frequency = 4.5, dampingRatio = 0.85 }),
+					Y = Spring(Window.Position.Y.Offset, { frequency = 4.5, dampingRatio = 0.85 }),
+				})
+			end)
+		end
+
 		Window.Root.Active = true
-		Window.Root.Draggable = true
+		Window.Root.Draggable = false -- replaced by the top bar drag handle
 
 		Creator.AddSignal(ResizeStartFrame.InputBegan, function(Input)
 			if
@@ -4864,7 +5645,7 @@ Components.Window = (function()
 
 				local TargetSize = Vector3.new(StartSize.X.Offset, StartSize.Y.Offset, 0) + Vector3.new(1, 1, 0) * Delta
 				local TargetSizeClamped =
-					Vector2.new(math.clamp(TargetSize.X, 470, 2048), math.clamp(TargetSize.Y, 380, 2048))
+					Vector2.new(math.clamp(TargetSize.X, 470, 2048), math.clamp(TargetSize.Y, TITLEBAR_HEIGHT + 338, 2048))
 
 				SizeMotor:setGoal({
 					X = Flipper.Instant.new(TargetSizeClamped.X),
@@ -4874,9 +5655,19 @@ Components.Window = (function()
 		end)
 
 		Creator.AddSignal(UserInputService.InputEnded, function(Input)
-			if Resizing == true or Input.UserInputType == Enum.UserInputType.Touch then
+			-- Only the press that started the drag ends it. Without the type filter any
+			-- key release (walking with WASD during a resize) committed a half-dragged size.
+			if
+				Resizing == true
+				and (
+					Input.UserInputType == Enum.UserInputType.MouseButton1
+					or Input.UserInputType == Enum.UserInputType.Touch
+				)
+			then
 				Resizing = false
-				Window.Size = UDim2.fromOffset(SizeMotor:getValue().X, SizeMotor:getValue().Y)
+				if not Window.Collapsed then
+					Window.Size = UDim2.fromOffset(SizeMotor:getValue().X, SizeMotor:getValue().Y)
+				end
 			end
 		end)
 
@@ -4906,16 +5697,46 @@ Components.Window = (function()
 			end
 		end)
 
+		-- Rewritten: the original only resized TabFrame and left SearchFrame and
+		-- TabHolder where they were, so toggling search desynced the tab column --
+		-- and it ignored the UserInfo layouts entirely. These branches mirror the
+		-- creation-time formulas exactly.
 		function Window:ToggleSearch()
 			Window.ShowSearch = not Window.ShowSearch
 			SearchFrame.Visible = Window.ShowSearch
-			local topOffset = Window.TopOffset or 25
-			local searchOffset = Window.HasImage and (Window.ImageSize + 10 + topOffset) or topOffset
-			SearchFrame.Position = UDim2.new(0, 0, 0, searchOffset)
-			local imageOffset = Window.HasImage and (Window.ImageSize + 10 + topOffset) or topOffset
+
+			local topOffset = Window.TopOffset or 0
 			local searchHeight = 28
-			local totalOffset = (Window.ShowSearch and searchHeight or 0) + imageOffset
-			TabFrame.Size = UDim2.new(0, Window.TabWidth, 1, -(totalOffset + 31))
+			local imageOffset = Window.HasImage and (Window.ImageSize + 10 + topOffset) or topOffset
+			local userInfoHeight = Config.UserInfo and (Window.UserInfoHeight or 56) or 0
+			local userInfoTop = (Config.UserInfo and Config.UserInfoTop) and (userInfoHeight + 6) or 0
+
+			SearchFrame.Position = UDim2.new(0, 0, 0, userInfoTop + imageOffset)
+
+			if Config.UserInfo and Config.UserInfoTop then
+				TabFrame.Position = UDim2.new(0, 12, 0, TITLEBAR_HEIGHT - 3)
+				TabFrame.Size = UDim2.new(0, Window.TabWidth, 1, -(TITLEBAR_HEIGHT + 6))
+			else
+				TabFrame.Position = UDim2.new(0, 12, 0, TITLEBAR_HEIGHT + 12)
+				TabFrame.Size = UDim2.new(0, Window.TabWidth, 1, -(TITLEBAR_HEIGHT + 21))
+			end
+
+			local newTabHolderTop
+			if Config.UserInfo and Config.UserInfoTop then
+				newTabHolderTop = userInfoHeight + 6 + imageOffset + (Window.ShowSearch and (searchHeight + 6) or 0)
+			elseif Window.HasImage then
+				newTabHolderTop = imageOffset + (Window.ShowSearch and (searchHeight + 6) or 0)
+			else
+				newTabHolderTop = Window.ShowSearch and (topOffset + searchHeight + 6) or 10
+			end
+
+			-- with UserInfoTop the user block sits at the TOP, inside newTabHolderTop
+			-- already; only the bottom-anchored variant has to reserve room for it
+			local bottomReserve = (Config.UserInfo and not Config.UserInfoTop) and userInfoHeight or 0
+
+			Window.TabHolderTop = newTabHolderTop
+			Window.TabHolder.Position = UDim2.new(0, 0, 0, newTabHolderTop)
+			Window.TabHolder.Size = UDim2.new(1, 0, 1, -(newTabHolderTop + 6 + bottomReserve))
 
 			if Window.UpdateTabHolderLayout then
 				Window:UpdateTabHolderLayout()
@@ -4957,8 +5778,6 @@ Components.Window = (function()
 							local iconLbl = btn:FindFirstChild("Icon")
 							if iconLbl and iconLbl:IsA("TextLabel") then
 								iconLbl.Text = Window.Minimized and utf8.char(9633) or utf8.char(8211)
-							elseif iconLbl and iconLbl:IsA("ImageLabel") then
-								iconLbl.Image = Window.Minimized and "" or ""
 							end
 						end
 				end)
@@ -4987,10 +5806,19 @@ Components.Window = (function()
 					Parent = Window.Root,
 				}, {
 					New("UICorner", {
-						CornerRadius = UDim.new(0, 8),
+						CornerRadius = UDim.new(0, WINDOW_CORNER),
 					}),
 				})
 				Window.BackgroundImage = BackgroundImageFrame
+				if Window.Corners then
+					local c = BackgroundImageFrame:FindFirstChildOfClass("UICorner")
+					if c then
+						table.insert(Window.Corners, c)
+						if Window.CornerRadius then
+							c.CornerRadius = UDim.new(0, Window.CornerRadius)
+						end
+					end
+				end
 				if imageTransparency ~= nil then
 					Window.BackgroundImageTransparency = imageTransparency
 				end
@@ -5006,6 +5834,11 @@ Components.Window = (function()
 
 		local DialogModule = Components.Dialog:Init(Window)
 		function Window:Dialog(Config)
+			-- the tint and the dialog are sized against Window.Root, so never open one
+			-- while the window is rolled up into its bar
+			if Window.Collapsed then
+				Window.Collapse(false, true)
+			end
 			local Dialog = DialogModule:Create()
 			Dialog.Title.Text = Config.Title
 
@@ -7452,6 +8285,9 @@ Library.CreateWindow = function(self, Config)
 	Library.Acrylic = Config.Acrylic or false
 	Library.Theme = Config.Theme or "Dark"
 	SaveManager.DefaultTheme = Library.Theme
+	if Config.Size == nil then
+		Config.Size = UDim2.fromOffset(580, 460)
+	end
 	if Config.BackgroundImage == nil then
 		Config.BackgroundImage = ""
 	end
@@ -7467,6 +8303,7 @@ Library.CreateWindow = function(self, Config)
 		Size = Config.Size,
 		Title = Config.Title,
 		Icon = Icon,
+		IconCorner = Config.IconCorner,
 		Image = Config.Image,
 		BackgroundImage = Config.BackgroundImage,
 		BackgroundTransparency = Config.BackgroundTransparency,
