@@ -24,7 +24,7 @@ Biblioteca de interface gráfica para scripts Roblox, com topbar profissional.
 ## 1. Inicialização
 
 ```lua
-local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/FluentPro.lua"))()
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/ServerSad/LibraryFluent/main/Library.lua"))()
 ```
 
 ---
@@ -452,7 +452,7 @@ if Library.Unloaded then return end
 ## 12. Exemplo Completo
 
 ```lua
-local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/FluentPro.lua"))()
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/ServerSad/LibraryFluent/main/Library.lua"))()
 
 local Window = Library:CreateWindow({
     Title      = "My Hub",
